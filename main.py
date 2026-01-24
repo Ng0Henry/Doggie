@@ -1,0 +1,189 @@
+import sys
+import os
+import time
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
+from PyQt6.QtGui import QPainter, QAction
+from PyQt6.QtMultimedia import QSoundEffect, QAudioOutput, QMediaPlayer
+from PyQt6.QtCore import QUrl
+
+from engine.sprite_engine import SpriteEngine
+from engine.pet_ai import PetAI, State
+from engine.window_helper import get_collidable_windows
+
+ANIMATIONS_CONFIG = {
+    "IDLE":       {"row": 0, "frames": 4,  "speed": 200},
+    "LOOK_SIDE":  {"row": 1, "frames": 4,  "speed": 200},
+    "LICK":       {"row": 2, "frames": 4,  "speed": 150},
+    "CLEAN":      {"row": 3, "frames": 4,  "speed": 150},
+    "WALK":       {"row": 4, "frames": 8,  "speed": 100}, 
+    "RUN":        {"row": 5, "frames": 8,  "speed": 80},  
+    "SLEEP":      {"row": 6, "frames": 4,  "speed": 400},
+    "PLAY":       {"row": 7, "frames": 6,  "speed": 120},
+    "JUMP":       {"row": 8, "frames": 2,  "speed": 150},
+    "LANDING":    {"row": 8, "frames": 3,  "col_start": 4, "speed": 100},
+    "EMOTE":      {"row": 9, "frames": 8,  "speed": 150},
+    "CARRY_HELD": {"row": 8, "frames": 1,  "col_start": 2, "speed": 1000}, 
+    "CARRY_FALL": {"row": 8, "frames": 1,  "col_start": 3, "speed": 1000}, 
+}
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+class DesktopPet(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        
+        # Window attributes
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.WindowDoesNotAcceptFocus |
+            Qt.WindowType.Tool # Hide from taskbar
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.setFixedSize(128, 128)
+        
+        # Engine setup
+        spritesheet_path = resource_path(os.path.join("assets", "spritesheet.png"))
+        self.sprite_engine = SpriteEngine(spritesheet_path)
+        for name, cfg in ANIMATIONS_CONFIG.items():
+            self.sprite_engine.load_animation(name, cfg["row"], cfg["frames"], cfg.get("col_start", 0))
+            
+        # Audio
+        self.audio_output = QAudioOutput()
+        self.purr_player = QMediaPlayer()
+        self.purr_player.setAudioOutput(self.audio_output)
+        purr_path = resource_path(os.path.join("assets", "purr.mp3"))
+        self.purr_player.setSource(QUrl.fromLocalFile(purr_path))
+        self.audio_output.setVolume(0.5)
+
+        # AI tracking
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.ai = PetAI(screen.width() // 2, screen.bottom() - 128)
+        
+        # Window tracking
+        self.collidable_floors = [screen.bottom()]
+        self.last_window_update = 0
+        
+        # Dragging state
+        self.dragging = False
+        self.drag_pos = QPoint()
+        
+        # Timer
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.game_loop)
+        self.timer.start(30) # ~33 FPS
+
+        self.show()
+
+    def update_windows(self):
+        # Update window list every 500ms
+        if time.time() - self.last_window_update > 0.5:
+            screen_bottom = QApplication.primaryScreen().availableGeometry().bottom()
+            rects = get_collidable_windows(exclude_hwnd=int(self.winId()))
+            
+            # Extract top edges that intersect with the cat's horizontal range
+            floors = [screen_bottom]
+            for r in rects:
+                left, top, right, bottom = r
+                if left < self.ai.x + 100 and right > self.ai.x + 28:
+                    floors.append(top)
+            
+            self.collidable_floors = floors
+            self.last_window_update = time.time()
+
+    def game_loop(self):
+        self.update_windows()
+        
+        # Update AI
+        screen_width = QApplication.primaryScreen().availableGeometry().width()
+        self.ai.update(30, screen_width, self.collidable_floors)
+        
+        # Sync window position
+        if self.dragging:
+            # Position is updated by mouseMoveEvent
+            pass
+        else:
+            self.move(int(self.ai.x), int(self.ai.y))
+            
+        # Animation frame update
+        anim_cfg = ANIMATIONS_CONFIG.get(self.ai.current_anim, ANIMATIONS_CONFIG["IDLE"])
+        if self.ai.anim_timer > anim_cfg["speed"]:
+            self.ai.frame_idx = (self.ai.frame_idx + 1) % anim_cfg["frames"]
+            self.ai.anim_timer = 0
+            
+        self.update() # Trigger paintEvent
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        frame = self.sprite_engine.get_frame(self.ai.current_anim, self.ai.frame_idx, self.ai.direction)
+        if frame:
+            painter.drawPixmap(0, 0, frame)
+
+    # Input Events
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.ai.set_state(State.CARRY)
+            event.accept()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.show_context_menu(event.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            new_pos = event.globalPosition().toPoint() - self.drag_pos
+            
+            # Update direction based on move
+            if new_pos.x() > self.ai.x:
+                self.ai.direction = "right"
+            elif new_pos.x() < self.ai.x:
+                self.ai.direction = "left"
+                
+            self.ai.x = new_pos.x()
+            self.ai.y = new_pos.y()
+            self.move(new_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = False
+            self.ai.vy = 0 # Drop it
+            self.ai.set_state(State.FALL)
+            event.accept()
+
+    def wheelEvent(self, event):
+        # Petting interaction
+        if self.ai.state != State.CARRY:
+            self.ai.set_state(State.EMOTE, duration=1500)
+            self.purr_player.play()
+            event.accept()
+
+    def show_context_menu(self, pos):
+        menu = QMenu(self)
+        feed_action = QAction("Feed", self)
+        feed_action.triggered.connect(self.feed_pet)
+        close_action = QAction("Close", self)
+        close_action.triggered.connect(QApplication.instance().quit)
+        
+        menu.addAction(feed_action)
+        menu.addSeparator()
+        menu.addAction(close_action)
+        menu.exec(pos)
+
+    def feed_pet(self):
+        self.ai.last_fed = time.time()
+        self.ai.set_state(State.SLEEP, duration=10000)
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    pet = DesktopPet()
+    sys.exit(app.exec())
