@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
 from PyQt6.QtGui import QPainter, QAction
 from PyQt6.QtMultimedia import QSoundEffect, QAudioOutput, QMediaPlayer
 from PyQt6.QtCore import QUrl
+import ctypes
 
 from engine.sprite_engine import SpriteEngine
 from engine.pet_ai import PetAI, State
@@ -99,7 +100,60 @@ class DesktopPet(QMainWindow):
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(30) # ~33 FPS
 
+        # Use a single shot timer to apply macOS-specific fixes after the window is fully realized
+        if sys.platform == "darwin":
+            QTimer.singleShot(500, self.apply_macos_fixes)
+        
         self.show()
+
+    def apply_macos_fixes(self):
+        """Apply native macOS window behavior fixes."""
+        try:
+            import objc
+            from AppKit import (
+                NSApplication, 
+                NSApplicationActivationPolicyAccessory,
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowCollectionBehaviorMoveToActiveSpace,
+                NSWindowCollectionBehaviorStationary,
+                NSWindowCollectionBehaviorIgnoresCycle
+            )
+            
+            # 1. Hide Dock Icon (if not already handled)
+            nsapp = NSApplication.sharedApplication()
+            nsapp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+            # 2. Get Native Window
+            view_ptr = int(self.winId())
+            view = objc.objc_object(c_void_p=ctypes.c_void_p(view_ptr))
+            window = view.window()
+            
+            if window:
+                # Remove Shadow (Outline)
+                window.setHasShadow_(False)
+                
+                # Keep Visible on Deactivate
+                window.setHidesOnDeactivate_(False)
+                
+                # Space Collection Behavior
+                # JOIN_ALL_SPACES: Follow across desktops
+                # MOVE_TO_ACTIVE_SPACE: Ensure it appears on the current space
+                # STATIONARY: Don't move with other windows
+                # IGNORES_CYCLE: Don't show in Cmd+Tab
+                behavior = (
+                    NSWindowCollectionBehaviorCanJoinAllSpaces | 
+                    NSWindowCollectionBehaviorMoveToActiveSpace |
+                    NSWindowCollectionBehaviorStationary |
+                    NSWindowCollectionBehaviorIgnoresCycle
+                )
+                window.setCollectionBehavior_(behavior)
+                
+                # Set a high level (NSStatusWindowLevel = 25)
+                # This ensures it's above most apps but below system overlays
+                window.setLevel_(25) 
+                
+        except Exception as e:
+            print(f"macOS window customization failed: {e}")
 
     def update_windows(self):
         # Update window list every 500ms
@@ -113,17 +167,20 @@ class DesktopPet(QMainWindow):
                 s_geo = s.availableGeometry()
                 # If cat is horizontally within this screen, its bottom is a valid floor
                 if self.ai.x + 100 > s_geo.left() and self.ai.x + 28 < s_geo.right():
-                    floors.append(s_geo.bottom())
-
-            rects = get_collidable_windows(exclude_hwnd=int(self.winId()))
+                    # Use availableGeometry().bottom() + 1 to treat it as a solid surface
+                    # Qt's bottom() is height-1, so height is bottom()+1
+                    floors.append(s_geo.bottom() + 1)
             
+            rects = get_collidable_windows(exclude_hwnd=int(self.winId()))
             # Extract top edges that intersect with the cat's horizontal range
             for r in rects:
                 left, top, right, bottom = r
                 if left < self.ai.x + 100 and right > self.ai.x + 28:
                     floors.append(top)
-            
-            self.collidable_floors = floors if floors else [self.virtual_geo.bottom()]
+
+            # Always include the absolute bottom as a safety floor
+            floors.append(self.virtual_geo.bottom() + 1)
+            self.collidable_floors = floors
             self.last_window_update = time.time()
 
     def game_loop(self):
@@ -258,5 +315,20 @@ class DesktopPet(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # Hide Dock icon on macOS
+    if sys.platform == "darwin":
+        try:
+            from AppKit import NSBundle
+            # This is a cleaner way to do it before the app fully starts
+            # Another way is using NSApplication.sharedApplication().setActivationPolicy_(2)
+            # but setting LSUIElement in Info.plist is preferred for bundled apps.
+            # For development/script running, we can use this:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+            nsapp = NSApplication.sharedApplication()
+            nsapp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        except ImportError:
+            pass
+
     pet = DesktopPet()
     sys.exit(app.exec())

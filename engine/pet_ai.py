@@ -61,13 +61,15 @@ class PetAI:
         # Find current floor (closest below cat)
         current_floor = 100000 
         for f in floors:
-            if f >= self.y + 120: # 120 is nearly the bottom of the 128px sprite
+            # We check if floor is below the cat's belly (y + 100)
+            if f >= self.y + 100: 
                 if f < current_floor:
                     current_floor = f
         
         # Gravity
         if self.state != State.CARRY:
-            if self.y + 128 < current_floor:
+            # 128 is the bottom of the sprite
+            if self.y + 128 < current_floor - 2: # Add small epsilon to avoid jitter
                 self.vy += self.gravity
                 if self.state != State.JUMP:
                     self.set_state(State.FALL)
@@ -79,6 +81,7 @@ class PetAI:
                     if time.time() * 1000 > self.state_end_time:
                         self.set_state(State.IDLE)
                 
+                # Snap to floor
                 self.y = current_floor - 128
                 self.vy = 0
         
@@ -90,7 +93,7 @@ class PetAI:
 
         self.y += self.vy
 
-        # --- Clamping and Collisions (AFTER movement) ---
+        # --- Clamping and Collisions ---
         
         # Virtual Desktop Boundary Clamping (Horizontal)
         if self.x < v_left:
@@ -104,12 +107,11 @@ class PetAI:
                 self.set_state(State.IDLE, duration=2000)
                 self.direction = "left"
         
-        # Hard clamp Y to virtual desktop bottom (ultimate fallback)
-        if self.y > v_bottom - 128:
-            self.y = v_bottom - 128
+        # Absolute bottom clamp (safety fallback)
+        # Use a 5px buffer to avoid fighting with the floor logic
+        if self.y > v_bottom + 5 - 128:
+            self.y = v_bottom + 5 - 128
             self.vy = 0
-            if self.state == State.FALL or self.state == State.JUMP:
-                self.set_state(State.LANDING, duration=300)
         
         # Stop at top of virtual desktop
         if self.y < v_top:
