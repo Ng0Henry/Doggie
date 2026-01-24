@@ -1,7 +1,7 @@
-# Kitten Python 🐱
+# Desktop Kitten 🐱
 > **A tiny feline companion for your digital desktop.**
 
-Kitten Python is a lightweight desktop pet application built with Python and PyQt6. This little kitten lives on your screen, walks on top of your windows, and reacts to your interactions with animations and sounds.
+Desktop Kitten is a lightweight desktop pet application built with Python and PyQt6. This little kitten lives on your screen, walks on top of your windows, and reacts to your interactions with animations and sounds.
 
 ## ✨ Features
 - **Window Awareness**: The kitten can detect the top edges of your open windows and use them as platforms to walk or sit on.
