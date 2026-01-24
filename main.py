@@ -83,11 +83,11 @@ class DesktopPet(QMainWindow):
         self.fade_update_timer.start(50)
 
         # AI tracking
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.ai = PetAI(screen.width() // 2, screen.bottom() - 128)
+        self.virtual_geo = QApplication.primaryScreen().virtualGeometry()
+        self.ai = PetAI(self.virtual_geo.center().x(), self.virtual_geo.center().y())
         
         # Window tracking
-        self.collidable_floors = [screen.bottom()]
+        self.collidable_floors = [self.virtual_geo.bottom()]
         self.last_window_update = 0
         
         # Dragging state
@@ -104,25 +104,34 @@ class DesktopPet(QMainWindow):
     def update_windows(self):
         # Update window list every 500ms
         if time.time() - self.last_window_update > 0.5:
-            screen_bottom = QApplication.primaryScreen().availableGeometry().bottom()
+            # Collect floors from all screens that intersect the cat's X range
+            floors = []
+            screens = QApplication.screens()
+            cat_rect = QRect(int(self.ai.x), int(self.ai.y), 128, 128)
+            
+            for s in screens:
+                s_geo = s.availableGeometry()
+                # If cat is horizontally within this screen, its bottom is a valid floor
+                if self.ai.x + 100 > s_geo.left() and self.ai.x + 28 < s_geo.right():
+                    floors.append(s_geo.bottom())
+
             rects = get_collidable_windows(exclude_hwnd=int(self.winId()))
             
             # Extract top edges that intersect with the cat's horizontal range
-            floors = [screen_bottom]
             for r in rects:
                 left, top, right, bottom = r
                 if left < self.ai.x + 100 and right > self.ai.x + 28:
                     floors.append(top)
             
-            self.collidable_floors = floors
+            self.collidable_floors = floors if floors else [self.virtual_geo.bottom()]
             self.last_window_update = time.time()
 
     def game_loop(self):
         self.update_windows()
         
         # Update AI
-        screen_width = QApplication.primaryScreen().availableGeometry().width()
-        self.ai.update(30, screen_width, self.collidable_floors)
+        v_rect = [self.virtual_geo.left(), self.virtual_geo.top(), self.virtual_geo.right(), self.virtual_geo.bottom()]
+        self.ai.update(30, v_rect, self.collidable_floors)
         
         # Sync window position
         if self.dragging:

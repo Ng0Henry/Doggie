@@ -45,12 +45,14 @@ class PetAI:
     def is_hungry(self):
         return time.time() - self.last_fed > self.hunger_threshold
 
-    def update(self, delta_ms, screen_width, floors):
+    def update(self, delta_ms, virtual_rect, floors):
         """
         Updates physics and AI state.
-        floors: list of Y coordinates representing surfaces (window tops + screen bottom)
+        virtual_rect: [left, top, right, bottom] of the entire virtual desktop
+        floors: list of Y coordinates representing surfaces (window tops + screen bottoms)
         """
         self.anim_timer += delta_ms
+        v_left, v_top, v_right, v_bottom = virtual_rect
         
         # Hunger check
         hungry = self.is_hungry()
@@ -90,26 +92,29 @@ class PetAI:
 
         # --- Clamping and Collisions (AFTER movement) ---
         
-        # Screen Boundary Clamping (Horizontal)
-        if self.x < 0:
-            self.x = 0
+        # Virtual Desktop Boundary Clamping (Horizontal)
+        if self.x < v_left:
+            self.x = v_left
             if self.state in [State.WALK, State.RUN]:
                 self.set_state(State.IDLE, duration=2000)
                 self.direction = "right"
-        elif self.x > screen_width - 128:
-            self.x = screen_width - 128
+        elif self.x > v_right - 128:
+            self.x = v_right - 128
             if self.state in [State.WALK, State.RUN]:
                 self.set_state(State.IDLE, duration=2000)
                 self.direction = "left"
         
-        # Hard clamp Y to screen bottom (prevent glitches at high speed)
-        # Using a safer fallback for screen height (e.g. 1080)
-        actual_bottom = max(floors) if floors else 1080
-        if self.y > actual_bottom - 128:
-            self.y = actual_bottom - 128
+        # Hard clamp Y to virtual desktop bottom (ultimate fallback)
+        if self.y > v_bottom - 128:
+            self.y = v_bottom - 128
             self.vy = 0
             if self.state == State.FALL or self.state == State.JUMP:
                 self.set_state(State.LANDING, duration=300)
+        
+        # Stop at top of virtual desktop
+        if self.y < v_top:
+            self.y = v_top
+            self.vy = 0
 
         # AI Behavior transitions
         if time.time() * 1000 > self.state_end_time:
