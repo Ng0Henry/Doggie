@@ -41,15 +41,21 @@ class PetAI:
         self.gravity = 0.5
         self.walk_speed = 2
         self.run_speed = 4
+        self.last_reaction_time = 0
+        
+        # Lazy/Playful system
+        self.awake_until = 0
+        self.queued_state = None
         
     def is_hungry(self):
-        return time.time() - self.last_fed > self.hunger_threshold
+        return False # No longer gets hungry and annoying
 
-    def update(self, delta_ms, virtual_rect, floors):
+    def update(self, delta_ms, virtual_rect, floors, mouse_pos=None):
         """
         Updates physics and AI state.
         virtual_rect: [left, top, right, bottom] of the entire virtual desktop
         floors: list of Y coordinates representing surfaces (window tops + screen bottoms)
+        mouse_pos: (x, y) tuple of the global mouse position
         """
         self.anim_timer += delta_ms
         v_left, v_top, v_right, v_bottom = virtual_rect
@@ -67,15 +73,18 @@ class PetAI:
                     current_floor = f
         
         # Gravity
+        on_ground = False
         if self.state != State.CARRY:
             # 128 is the bottom of the sprite
             if self.y + 128 < current_floor - 2: # Add small epsilon to avoid jitter
                 self.vy += self.gravity
-                if self.state != State.JUMP:
+                if self.state != State.JUMP and self.state != State.FALL:
                     self.set_state(State.FALL)
             else:
                 # Landed
+                on_ground = True
                 if self.state == State.FALL or self.state == State.JUMP:
+                    self.vx = 0 # Stop jump momentum
                     self.set_state(State.LANDING, duration=300)
                 elif self.state == State.LANDING:
                     if time.time() * 1000 > self.state_end_time:
@@ -84,12 +93,39 @@ class PetAI:
                 # Snap to floor
                 self.y = current_floor - 128
                 self.vy = 0
+
+        # Jump/Play Trigger
+        now = time.time() * 1000
+        if on_ground and self.state not in [State.SLEEP, State.CARRY, State.JUMP, State.LANDING, State.EMOTE, State.PLAY]:
+            if mouse_pos:
+                mx, my = mouse_pos
+                dx = mx - (self.x + 64)
+                dy = my - (self.y + 64)
+                dist = (dx**2 + dy**2)**0.5
+                
+                # Check if mouse is in front and near ground level (dy 20-80)
+                in_front = (self.direction == "right" and dx > 0) or (self.direction == "left" and dx < 0)
+                near_ground = 20 < dy < 80
+                
+                if in_front and near_ground:
+                    if dist < 40:
+                        # Almost touching ground near cat - Play! (No cooldown)
+                        self.set_state(State.PLAY, duration=720) # 6 frames * 120ms
+                    elif dist < 80:
+                        # A bit further out - Jump! (With 10s cooldown)
+                        if now - self.last_reaction_time > 10000:
+                            self.last_reaction_time = now
+                            self.vx = 2.3 if self.direction == "right" else -2.3
+                            self.vy = -4.6
+                            self.set_state(State.JUMP, duration=1050) # 7 frames * 150ms
         
         # Horizontal Movement
         if self.state == State.WALK:
             self.x += (self.walk_speed * speed_mult) if self.direction == "right" else -(self.walk_speed * speed_mult)
         elif self.state == State.RUN:
             self.x += (self.run_speed * speed_mult) if self.direction == "right" else -(self.run_speed * speed_mult)
+        else:
+            self.x += self.vx
 
         self.y += self.vy
 
@@ -120,7 +156,13 @@ class PetAI:
 
         # AI Behavior transitions
         if time.time() * 1000 > self.state_end_time:
-            self.choose_next_state(hungry)
+            self.choose_next_state()
+
+    def wake_up(self, duration_ms=60000):
+        """Wakes the cat up and makes it playful for a duration."""
+        self.awake_until = time.time() * 1000 + duration_ms
+        if self.state == State.SLEEP:
+            self.set_state(State.IDLE, duration=1000)
 
     def set_state(self, new_state, duration=random.randint(2000, 5000)):
         self.state = new_state
@@ -135,21 +177,38 @@ class PetAI:
         else:
             self.current_anim = self.state.name
 
-    def choose_next_state(self, hungry):
-        weights = {
-            State.IDLE: 25,
-            State.LOOK_SIDE: 15,
-            State.WALK: 30,
-            State.LICK: 10,
-            State.CLEAN: 10,
-            State.SLEEP: 10
-        }
-        
-        if hungry:
-            weights[State.RUN] = 30
-            weights[State.WALK] = 50
-            weights[State.SLEEP] = 0
-            weights[State.IDLE] = 10
+    def choose_next_state(self):
+        if self.queued_state:
+            next_s = self.queued_state
+            self.queued_state = None
+            duration = random.randint(30000, 600000) if next_s == State.SLEEP else random.randint(2000, 5000)
+            self.set_state(next_s, duration=duration)
+            return
+
+        now = time.time() * 1000
+        is_awake = now < self.awake_until
+
+        if is_awake:
+            # Playful/Active weights
+            weights = {
+                State.IDLE: 15,
+                State.LOOK_SIDE: 15,
+                State.WALK: 30,
+                State.RUN: 10,
+                State.LICK: 10,
+                State.CLEAN: 10,
+                State.PLAY: 10
+            }
+        else:
+            # Lazy/Sleepy weights
+            weights = {
+                State.IDLE: 20,
+                State.LOOK_SIDE: 5,
+                State.WALK: 5,
+                State.SLEEP: 60,
+                State.LICK: 5,
+                State.CLEAN: 5
+            }
             
         states = list(weights.keys())
         probs = list(weights.values())
@@ -158,8 +217,8 @@ class PetAI:
         # Determine duration
         duration = random.randint(2000, 5000)
         if next_s == State.SLEEP:
-            # Nap can last up to 10 minutes (600,000 ms), minimum 30 seconds
-            duration = random.randint(30000, 600000)
+            # Nap can last up to 10 minutes (600,000 ms), minimum 1 minute
+            duration = random.randint(60000, 600000)
         elif next_s in [State.WALK, State.RUN]:
             self.direction = random.choice(["left", "right"])
             

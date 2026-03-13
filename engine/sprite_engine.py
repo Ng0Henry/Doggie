@@ -42,12 +42,19 @@ class SpriteEngine:
             
         self.animations[name] = {
             "right": right_frames,
-            "left": left_frames
+            "left": left_frames,
+            "right_masks": [f.mask() for f in right_frames],
+            "left_masks": [f.mask() for f in left_frames]
         }
 
     def get_frame(self, anim_name, frame_idx, direction):
         if anim_name not in self.animations:
-            return None
+            return None, None
         
-        frames = self.animations[anim_name]["right" if direction == "right" else "left"]
-        return frames[frame_idx % len(frames)]
+        dir_key = "right" if direction == "right" else "left"
+        mask_key = dir_key + "_masks"
+        
+        frames = self.animations[anim_name][dir_key]
+        masks = self.animations[anim_name][mask_key]
+        idx = frame_idx % len(frames)
+        return frames[idx], masks[idx]

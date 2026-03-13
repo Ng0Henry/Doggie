@@ -3,7 +3,7 @@ import os
 import time
 from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
-from PyQt6.QtGui import QPainter, QAction
+from PyQt6.QtGui import QPainter, QAction, QCursor
 from PyQt6.QtMultimedia import QSoundEffect, QAudioOutput, QMediaPlayer
 from PyQt6.QtCore import QUrl
 import ctypes
@@ -21,7 +21,7 @@ ANIMATIONS_CONFIG = {
     "RUN":        {"row": 5, "frames": 8,  "speed": 80},  
     "SLEEP":      {"row": 6, "frames": 4,  "speed": 400},
     "PLAY":       {"row": 7, "frames": 6,  "speed": 120},
-    "JUMP":       {"row": 8, "frames": 2,  "speed": 150},
+    "JUMP":       {"row": 8, "frames": 7,  "speed": 150},
     "LANDING":    {"row": 8, "frames": 3,  "col_start": 4, "speed": 100},
     "EMOTE":      {"row": 9, "frames": 8,  "speed": 150},
     "CARRY_HELD": {"row": 8, "frames": 1,  "col_start": 2, "speed": 1000}, 
@@ -29,13 +29,25 @@ ANIMATIONS_CONFIG = {
 }
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+    """ Get absolute path to resource, checking multiple locations """
+    paths_to_check = []
+    
+    # 1. PyInstaller _MEIPASS
+    if hasattr(sys, '_MEIPASS'):
+        paths_to_check.append(os.path.join(sys._MEIPASS, relative_path))
+        
+    # 2. macOS App Bundle Resources (relative to executable)
+    bundle_path = os.path.join(os.path.dirname(sys.executable), "..", "Resources", relative_path)
+    paths_to_check.append(os.path.abspath(bundle_path))
+    
+    # 3. Current Working Directory (Dev)
+    paths_to_check.append(os.path.abspath(os.path.join(".", relative_path)))
+    
+    for path in paths_to_check:
+        if os.path.exists(path):
+            return path
+            
+    return paths_to_check[0] if paths_to_check else relative_path
 
 class DesktopPet(QMainWindow):
     def __init__(self):
@@ -82,7 +94,7 @@ class DesktopPet(QMainWindow):
         self.fade_update_timer = QTimer()
         self.fade_update_timer.timeout.connect(self.update_audio_fade)
         self.fade_update_timer.start(50)
-
+ 
         # AI tracking
         self.virtual_geo = QApplication.primaryScreen().virtualGeometry()
         self.ai = PetAI(self.virtual_geo.center().x(), self.virtual_geo.center().y())
@@ -99,12 +111,14 @@ class DesktopPet(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(30) # ~33 FPS
-
+ 
         # Use a single shot timer to apply macOS-specific fixes after the window is fully realized
         if sys.platform == "darwin":
             QTimer.singleShot(500, self.apply_macos_fixes)
         
         self.show()
+        self.raise_()
+        self.activateWindow()
 
     def apply_macos_fixes(self):
         """Apply native macOS window behavior fixes."""
@@ -114,7 +128,6 @@ class DesktopPet(QMainWindow):
                 NSApplication, 
                 NSApplicationActivationPolicyAccessory,
                 NSWindowCollectionBehaviorCanJoinAllSpaces,
-                NSWindowCollectionBehaviorMoveToActiveSpace,
                 NSWindowCollectionBehaviorStationary,
                 NSWindowCollectionBehaviorIgnoresCycle
             )
@@ -136,13 +149,9 @@ class DesktopPet(QMainWindow):
                 window.setHidesOnDeactivate_(False)
                 
                 # Space Collection Behavior
-                # JOIN_ALL_SPACES: Follow across desktops
-                # MOVE_TO_ACTIVE_SPACE: Ensure it appears on the current space
                 # STATIONARY: Don't move with other windows
                 # IGNORES_CYCLE: Don't show in Cmd+Tab
                 behavior = (
-                    NSWindowCollectionBehaviorCanJoinAllSpaces | 
-                    NSWindowCollectionBehaviorMoveToActiveSpace |
                     NSWindowCollectionBehaviorStationary |
                     NSWindowCollectionBehaviorIgnoresCycle
                 )
@@ -186,9 +195,13 @@ class DesktopPet(QMainWindow):
     def game_loop(self):
         self.update_windows()
         
+        # Get mouse position
+        m_pos = QCursor.pos()
+        mouse_tuple = (m_pos.x(), m_pos.y())
+        
         # Update AI
         v_rect = [self.virtual_geo.left(), self.virtual_geo.top(), self.virtual_geo.right(), self.virtual_geo.bottom()]
-        self.ai.update(30, v_rect, self.collidable_floors)
+        self.ai.update(30, v_rect, self.collidable_floors, mouse_pos=mouse_tuple)
         
         # Sync window position
         if self.dragging:
@@ -200,14 +213,35 @@ class DesktopPet(QMainWindow):
         # Animation frame update
         anim_cfg = ANIMATIONS_CONFIG.get(self.ai.current_anim, ANIMATIONS_CONFIG["IDLE"])
         if self.ai.anim_timer > anim_cfg["speed"]:
-            self.ai.frame_idx = (self.ai.frame_idx + 1) % anim_cfg["frames"]
-            self.ai.anim_timer = 0
+            # Special case: Petting EMOTE hold at frame 5
+            if self.is_petting and self.ai.current_anim == "EMOTE" and self.ai.frame_idx == 5:
+                self.ai.anim_timer = 0
+            else:
+                next_frame = (self.ai.frame_idx + 1)
+                
+                # If we reached the end of the EMOTE animation and we're not petting anymore,
+                # transition to IDLE immediately to prevent looping back to frame 0.
+                if self.ai.current_anim == "EMOTE" and next_frame >= anim_cfg["frames"]:
+                    if not self.is_petting:
+                        self.ai.set_state(State.IDLE)
+                    else:
+                        # Fallback for continuous petting if it somehow exceeds frames
+                        self.ai.frame_idx = 0
+                else:
+                    self.ai.frame_idx = next_frame % anim_cfg["frames"]
+                    
+                self.ai.anim_timer = 0
+            
+        # Update mask for click-through
+        _, mask = self.sprite_engine.get_frame(self.ai.current_anim, self.ai.frame_idx, self.ai.direction)
+        if mask:
+            self.setMask(mask)
             
         self.update() # Trigger paintEvent
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        frame = self.sprite_engine.get_frame(self.ai.current_anim, self.ai.frame_idx, self.ai.direction)
+        frame, _ = self.sprite_engine.get_frame(self.ai.current_anim, self.ai.frame_idx, self.ai.direction)
         if frame:
             painter.drawPixmap(0, 0, frame)
 
@@ -240,6 +274,7 @@ class DesktopPet(QMainWindow):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = False
             self.ai.vy = 0 # Drop it
+            self.ai.wake_up() # Waking up after being moved
             self.ai.set_state(State.FALL)
             event.accept()
 
@@ -249,25 +284,34 @@ class DesktopPet(QMainWindow):
             # Check if we just started petting
             if not self.is_petting:
                 self.is_petting = True
-                if self.ai.state == State.SLEEP:
-                    self.should_purr = True
-                    self.target_volume = 0.5 # Max volume
-                    self.purr_player.play()
-                else:
-                    self.should_purr = False
-                    self.ai.set_state(State.EMOTE, duration=1500)
+                # Delay the reaction by 500ms as requested
+                QTimer.singleShot(500, self.start_petting_reaction)
             else:
-                # Continuous petting
+                # Continuous petting logic (only active if reaction has already started)
                 if self.should_purr:
                     # Keep sleeping! Extend the state end time so it doesn't wake up while petting
                     self.ai.state_end_time = time.time() * 1000 + 3000
-                else:
-                    # Refresh emote
-                    self.ai.set_state(State.EMOTE, duration=1500)
+                elif self.ai.state == State.EMOTE:
+                    # Refresh emote duration
+                    self.ai.state_end_time = time.time() * 1000 + 1500
             
             # Reset the stop timer
             self.petting_stop_timer.start(300) 
             event.accept()
+
+    def start_petting_reaction(self):
+        """Triggered after a 500ms delay from the start of petting."""
+        if not self.is_petting:
+            return # Stopped petting before the delay finished
+            
+        if self.ai.state == State.SLEEP:
+            self.should_purr = True
+            self.target_volume = 0.5 # Max volume
+            self.purr_player.play()
+        else:
+            self.should_purr = False
+            self.ai.wake_up() # Refresh/Trigger playful period
+            self.ai.set_state(State.EMOTE, duration=1500)
 
     def on_petting_stopped(self):
         self.is_petting = False
@@ -298,6 +342,30 @@ class DesktopPet(QMainWindow):
 
     def show_context_menu(self, pos):
         menu = QMenu(self)
+        
+        # Dark mode styling for context menu
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2b2b2b;
+                color: white;
+                border: 1px solid #3d3d3d;
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px 6px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #4a4a4a;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #3d3d3d;
+                margin: 4px 10px;
+            }
+        """)
+        
         feed_action = QAction("Feed", self)
         feed_action.triggered.connect(self.feed_pet)
         close_action = QAction("Close", self)
@@ -310,8 +378,10 @@ class DesktopPet(QMainWindow):
 
     def feed_pet(self):
         self.ai.last_fed = time.time()
-        # Food coma nap: 5 minutes
-        self.ai.set_state(State.SLEEP, duration=300000)
+        self.ai.awake_until = 0 # No longer want to play if just fed
+        # Briefly lick/clean before sleep (2 seconds)
+        self.ai.set_state(State.CLEAN, duration=2000)
+        self.ai.queued_state = State.SLEEP
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
