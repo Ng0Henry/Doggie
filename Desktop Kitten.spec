@@ -1,5 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
-
+import sys
 
 a = Analysis(
     ['main.py'],
@@ -42,17 +41,18 @@ coll = COLLECT(
     upx_exclude=[],
     name='Desktop Kitten',
 )
-app = BUNDLE(
-    coll,
-    name='Desktop Kitten.app',
-    icon=None,
-    bundle_identifier='com.cyberhirsch.desktop-kitten',
-    info_plist={
-        'CFBundleShortVersionString': '1.0.0',
-        'CFBundleBundleName': 'Desktop Kitten',
-        'CFBundleDisplayName': 'Desktop Kitten',
-        'LSMinimumSystemVersion': '10.13.0',
-        'NSHighResolutionCapable': True,
-        'LSUIElement': True, # This hides it from the Dock and treats it as an accessory
-    },
-)
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='Desktop Kitten.app',
+        icon=None,
+        bundle_identifier='com.cyberhirsch.desktop-kitten',
+        info_plist={
+            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleBundleName': 'Desktop Kitten',
+            'CFBundleDisplayName': 'Desktop Kitten',
+            'LSMinimumSystemVersion': '10.13.0',
+            'NSHighResolutionCapable': True,
+            'LSUIElement': True,
+        },
+    )

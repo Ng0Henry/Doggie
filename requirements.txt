@@ -1,5 +1,6 @@
 PyQt6
-pyobjc-framework-Quartz
-pyobjc-framework-Cocoa
 Pillow
 pyinstaller
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pywin32; sys_platform == 'win32'
