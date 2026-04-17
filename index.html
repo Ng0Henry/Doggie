@@ -3,12 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Desktop Pet</title>
+    <title>PWA Desktop Pet</title>
     <style>
+        :root {
+            --sprite-size: 128px; /* Matches your Python script size */
+        }
+
         body {
             background: #222;
             color: white;
-            font-family: sans-serif;
+            font-family: system-ui, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -18,245 +22,155 @@
             overflow: hidden;
         }
 
-        #pet-container {
-            width: 128px;
-            height: 128px;
-            cursor: grab;
+        /* The Pet Container */
+        #pet-window {
+            width: var(--sprite-size);
+            height: var(--sprite-size);
             position: relative;
-            image-rendering: pixelated;
+            cursor: grab;
+            background-color: transparent;
         }
 
-        #pet-canvas {
+        /* THE SPRITE ANIMATION ENGINE */
+        #pet-sprite {
             width: 100%;
             height: 100%;
+            background-image: url('spritesheet.png');
+            background-repeat: no-repeat;
+            background-color: transparent;
+            image-rendering: pixelated; /* Keeps pixel art sharp */
+            
+            /* Default State */
+            background-position: 0px 0px; 
         }
+
+        /* Animation Keyframes using steps() to jump between frames */
+        @keyframes play-4-frames {
+            from { background-position-x: 0px; }
+            to { background-position-x: calc(var(--sprite-size) * -4); }
+        }
+
+        @keyframes play-8-frames {
+            from { background-position-x: 0px; }
+            to { background-position-x: calc(var(--sprite-size) * -8); }
+        }
+
+        /* CSS Classes for States */
+        /* background-position-y moves to the specific row (RowIndex * 128) */
+        .anim-idle      { background-position-y: calc(var(--sprite-size) * 0) !important; animation: play-4-frames 0.8s steps(4) infinite; }
+        .anim-look_side { background-position-y: calc(var(--sprite-size) * -1) !important; animation: play-4-frames 0.8s steps(4) infinite; }
+        .anim-lick      { background-position-y: calc(var(--sprite-size) * -2) !important; animation: play-4-frames 0.6s steps(4) infinite; }
+        .anim-clean     { background-position-y: calc(var(--sprite-size) * -3) !important; animation: play-4-frames 0.6s steps(4) infinite; }
+        .anim-walk      { background-position-y: calc(var(--sprite-size) * -4) !important; animation: play-8-frames 0.8s steps(8) infinite; }
+        .anim-sleep     { background-position-y: calc(var(--sprite-size) * -6) !important; animation: play-4-frames 1.2s steps(4) infinite; }
+        .anim-emote     { background-position-y: calc(var(--sprite-size) * -9) !important; animation: play-8-frames 1.0s steps(8) infinite; }
+
+        /* Direction control */
+        .facing-left { transform: scaleX(-1); }
 
         .controls {
             margin-top: 20px;
             background: #333;
-            padding: 20px;
+            padding: 15px 25px;
             border-radius: 12px;
             text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         }
 
         button {
             padding: 10px 20px;
-            font-size: 16px;
+            font-weight: bold;
             cursor: pointer;
             background: #4CAF50;
             border: none;
             color: white;
-            border-radius: 5px;
-            transition: 0.2s;
-        }
-
-        button:hover { background: #45a049; }
-        
-        .status {
-            margin-top: 10px;
-            font-size: 12px;
-            color: #aaa;
+            border-radius: 6px;
         }
     </style>
 </head>
 <body>
 
-    <div id="pet-container">
-        <canvas id="pet-canvas" width="128" height="128"></canvas>
+    <div id="pet-window">
+        <div id="pet-sprite" class="anim-idle"></div>
     </div>
 
     <div class="controls">
-        <h3>Desktop Pet PWA</h3>
-        <button id="pip-btn">Pop Out (Always on Top)</button>
-        <p class="status">Scroll on pet to pet it. Right-click for menu.</p>
-        <p style="font-size: 10px; color: #666;">Note: Requires Chrome/Edge for PiP mode.</p>
+        <button id="pip-btn">Float Pet (Always on Top)</button>
+        <p style="font-size: 12px; color: #888;">Scroll on pet to interact</p>
     </div>
 
 <script>
-/** 
- * CONFIGURATION & ASSETS 
- * Replace these URLs with your local paths or Base64 data
- */
-const ASSETS = {
-    spritesheet: 'assets/spritesheet.png', 
-    purr: 'assets/purr.mp3'
-};
+    const sprite = document.getElementById('pet-sprite');
+    
+    // Simple AI state controller
+    const states = ['idle', 'look_side', 'lick', 'clean', 'walk', 'sleep'];
+    let currentState = 'idle';
 
-const ANIMATIONS = {
-    "IDLE":       {row: 0, frames: 4,  speed: 200},
-    "LOOK_SIDE":  {row: 1, frames: 4,  speed: 200},
-    "LICK":       {row: 2, frames: 4,  speed: 150},
-    "CLEAN":      {row: 3, frames: 4,  speed: 150},
-    "WALK":       {row: 4, frames: 8,  speed: 100}, 
-    "RUN":        {row: 5, frames: 8,  speed: 80},  
-    "SLEEP":      {row: 6, frames: 4,  speed: 400},
-    "PLAY":       {row: 7, frames: 6,  speed: 120},
-    "EMOTE":      {row: 9, frames: 8,  speed: 150},
-    "CARRY":      {row: 8, frames: 1,  col_start: 2, speed: 1000}, 
-    "FALL":       {row: 8, frames: 1,  col_start: 3, speed: 1000}
-};
-
-/** PET LOGIC ENGINE **/
-class PetAI {
-    constructor() {
-        this.x = window.innerWidth / 2;
-        this.y = window.innerHeight - 150;
-        this.vx = 0;
-        this.vy = 0;
-        this.state = "IDLE";
-        this.direction = "right";
-        this.frameIdx = 0;
-        this.animTimer = 0;
-        this.stateTimer = 0;
-        this.lastUpdate = Date.now();
+    function setAnimation(stateName) {
+        // Remove all current animation classes
+        sprite.className = '';
+        // Add the new state class
+        sprite.classList.add(`anim-${stateName}`);
         
-        // Physics constants
-        this.gravity = 0.5;
-        this.friction = 0.9;
-    }
-
-    update() {
-        const now = Date.now();
-        const dt = now - this.lastUpdate;
-        this.lastUpdate = now;
-
-        // Simple State Machine
-        this.stateTimer -= dt;
-        if (this.stateTimer <= 0) {
-            this.decideNextState();
-        }
-
-        // Animation Timer
-        const config = ANIMATIONS[this.state];
-        this.animTimer += dt;
-        if (this.animTimer > config.speed) {
-            this.frameIdx = (this.frameIdx + 1) % config.frames;
-            this.animTimer = 0;
-        }
-
-        // Movement Physics
-        if (this.state === "WALK") {
-            this.vx = (this.direction === "right") ? 1.5 : -1.5;
-        } else if (this.state === "RUN") {
-            this.vx = (this.direction === "right") ? 3 : -3;
-        } else if (this.state !== "CARRY") {
-            this.vx *= this.friction;
-        }
-
-        // Gravity
-        if (this.y < window.innerHeight - 128) {
-            this.vy += this.gravity;
-        } else {
-            this.vy = 0;
-            this.y = window.innerHeight - 128;
-        }
-
-        this.x += this.vx;
-        this.y += this.vy;
-
-        // Screen bounds
-        if (this.x < 0) this.direction = "right";
-        if (this.x > window.innerWidth - 128) this.direction = "left";
-    }
-
-    decideNextState() {
-        const rand = Math.random();
-        if (rand < 0.6) {
-            this.state = "IDLE";
-            this.stateTimer = 2000 + Math.random() * 3000;
-        } else {
-            this.state = "WALK";
-            this.direction = Math.random() > 0.5 ? "right" : "left";
-            this.stateTimer = 1000 + Math.random() * 2000;
+        // Face a random direction if walking
+        if (stateName === 'walk') {
+            sprite.classList.toggle('facing-left', Math.random() > 0.5);
         }
     }
-}
 
-/** RENDERER & INTERACTION **/
-const canvas = document.getElementById('pet-canvas');
-const ctx = canvas.getContext('2d');
-const pet = new PetAI();
-const spriteImg = new Image();
-spriteImg.src = ASSETS.spritesheet;
-
-function draw() {
-    pet.update();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    const config = ANIMATIONS[pet.state];
-    const colStart = config.col_start || 0;
-    
-    ctx.save();
-    if (pet.direction === "left") {
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
+    // AI Logic Loop (changes behavior every few seconds)
+    function aiBrain() {
+        const randomState = states[Math.floor(Math.random() * states.length)];
+        setAnimation(randomState);
+        
+        // Wait 2-5 seconds before next change
+        setTimeout(aiBrain, 2000 + Math.random() * 3000);
     }
 
-    // Drawing from spritesheet (Assumes 128x128 grid)
-    ctx.drawImage(
-        spriteImg,
-        (colStart + pet.frameIdx) * 128, config.row * 128, 128, 128,
-        0, 0, 128, 128
-    );
-    
-    ctx.restore();
-    requestAnimationFrame(draw);
-}
+    // Initial Start
+    aiBrain();
 
-/** PICTURE IN PICTURE LOGIC **/
-const pipBtn = document.getElementById('pip-btn');
-
-pipBtn.addEventListener('click', async () => {
-    if (!window.documentPictureInPicture) {
-        alert("Document PiP API not supported in this browser.");
-        return;
-    }
-
-    // Open PiP Window
-    const pipWindow = await window.documentPictureInPicture.requestWindow({
-        width: 128,
-        height: 128,
+    // Interaction: Petting (Wheel event)
+    document.getElementById('pet-window').addEventListener('wheel', (e) => {
+        setAnimation('emote');
+        // Resume normal AI after 2 seconds
+        setTimeout(() => setAnimation('idle'), 2000);
     });
 
-    // Move Canvas to PiP Window
-    const container = document.getElementById('pet-container');
-    pipWindow.document.body.style.margin = "0";
-    pipWindow.document.body.style.overflow = "hidden";
-    pipWindow.document.body.style.backgroundColor = "transparent";
-    pipWindow.document.body.appendChild(container);
+    /** PICTURE IN PICTURE LOGIC **/
+    const pipBtn = document.getElementById('pip-btn');
+    pipBtn.addEventListener('click', async () => {
+        if (!window.documentPictureInPicture) {
+            alert("Please use Chrome or Edge for Always-on-Top mode.");
+            return;
+        }
 
-    // Copy styles to PiP
-    [...document.styleSheets].forEach((styleSheet) => {
-        try {
-            const cssRules = [...styleSheet.cssRules].map((rule) => rule.cssText).join('');
-            const style = document.createElement('style');
-            style.textContent = cssRules;
-            pipWindow.document.head.appendChild(style);
-        } catch (e) {}
+        const pipWindow = await window.documentPictureInPicture.requestWindow({
+            width: 128,
+            height: 128,
+        });
+
+        // Copy CSS to the new window
+        [...document.styleSheets].forEach((styleSheet) => {
+            try {
+                const cssRules = [...styleSheet.cssRules].map((rule) => rule.cssText).join('');
+                const style = document.createElement('style');
+                style.textContent = cssRules;
+                pipWindow.document.head.appendChild(style);
+            } catch (e) {}
+        });
+
+        // Move the pet to the floating window
+        const petWindow = document.getElementById('pet-window');
+        pipWindow.document.body.style.backgroundColor = "transparent";
+        pipWindow.document.body.style.overflow = "hidden";
+        pipWindow.document.body.appendChild(petWindow);
+
+        // Return pet to main window when closed
+        pipWindow.addEventListener("pagehide", () => {
+            document.body.prepend(petWindow);
+        });
     });
-
-    // Handle Petting (Wheel) in PiP
-    pipWindow.addEventListener('wheel', (e) => {
-        pet.state = "EMOTE";
-        pet.stateTimer = 1000;
-    });
-
-    // Cleanup when PiP closes
-    pipWindow.addEventListener("pagehide", () => {
-        document.body.prepend(container);
-    });
-});
-
-// Initial startup
-spriteImg.onload = () => {
-    draw();
-};
-
-// Handle interactions in main window
-canvas.addEventListener('wheel', () => {
-    pet.state = "EMOTE";
-    pet.stateTimer = 1000;
-});
 </script>
 </body>
 </html>
